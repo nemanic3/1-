@@ -1,8 +1,10 @@
+# users/models.py
+from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.core.validators import RegexValidator
 
-class User(models.Model):
-    # 영어 1자 + 숫자 6자리 (예: C135195)
+class User(AbstractUser):
+    # 영문자 1자 + 숫자 6자리 (예: C135195)
     student_id = models.CharField(
         max_length=7,
         unique=True,
@@ -23,11 +25,15 @@ class User(models.Model):
             )
         ]
     )
-    # 입학년도
-    entry_year = models.PositiveSmallIntegerField()
+    current_year  = models.PositiveSmallIntegerField()
 
-    # 전공
     major = models.CharField(max_length=50)
 
-    def __str__(self):
-        return f"{self.student_id} - {self.full_name}"
+    USERNAME_FIELD = 'student_id'
+    REQUIRED_FIELDS = ['full_name']
+
+    def save(self, *args, **kwargs):
+        # student_id 를 항상 대문자로 변환
+        if self.student_id:
+            self.student_id = self.student_id.upper()
+        super().save(*args, **kwargs)
