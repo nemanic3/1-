@@ -18,3 +18,4 @@ class TranscriptParsedSerializer(serializers.ModelSerializer):
     class Meta:
         model = Transcript
         fields = ['parsed_data']
+

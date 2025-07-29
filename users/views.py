@@ -3,22 +3,53 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework.exceptions import AuthenticationFailed, NotAuthenticated
 
 from .models import User
-from .serializers import SignupSerializer, UserSerializer
+from .serializers import SignupSerializer, UserSerializer, CustomTokenObtainPairSerializer
+
 
 # 회원가입(student_id, full_name)
 class SignupView(generics.CreateAPIView):
     queryset = User.objects.all()
     serializer_class = SignupSerializer
 
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+
+        if not serializer.is_valid():
+            # 에러 dict 예시: {'current_year': ['현재 학년을 입력해주세요.'], 'major': …}
+            errors = serializer.errors
+            field, messages = next(iter(errors.items()))  # 첫 번째 필드와 메시지 리스트
+            return Response(
+                {'error_message': messages[0]},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        user = serializer.save()
+        return Response(
+            {
+                "message": "회원가입 성공",
+                "user_id": user.id
+            },
+            status=status.HTTP_201_CREATED
+        )
+
+
 # JWT 로그인 (access/refresh 토큰 발급)
 class LoginView(TokenObtainPairView):
-    # 기본 TokenObtainPairSerializer를 사용
-    pass
+    serializer_class = CustomTokenObtainPairSerializer
 
-# JWT refresh (optional)
-# from rest_framework_simplejwt.views import TokenRefreshView
+    def post(self, request, *args, **kwargs):
+        try:
+            # 정상적인 경우 super() 안에서 serializer.validate() → 토큰 리턴
+            return super().post(request, *args, **kwargs)
+        except AuthenticationFailed as e:
+            # 커스터마이징한 메시지를 key를 바꿔 반환하고 싶다면 여기서 처리
+            return Response(
+                {'error': str(e.detail)},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
 
 # 로그아웃: refresh token을 블랙리스트 처리
 class LogoutView(APIView):
@@ -38,62 +69,62 @@ class LogoutView(APIView):
                 {'detail': '유효하지 않은 토큰입니다.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        return Response(status=status.HTTP_205_RESET_CONTENT)
+        return Response(
+            {'message': '성공적으로 로그아웃 되었습니다.'},
+            status=status.HTTP_200_OK
+        )
+
 
 # 내 정보 조회
-from rest_framework.permissions import AllowAny
-from rest_framework.response import Response
-from rest_framework.exceptions import NotFound
-
 class MeView(generics.RetrieveAPIView):
-    permission_classes = [AllowAny]  # 로그인 없이 접근
+    permission_classes = [permissions.IsAuthenticated]
     serializer_class = UserSerializer
 
     def get(self, request, *args, **kwargs):
-        student_id = request.query_params.get('student_id')  # /me/?student_id=C555555
+        user = request.user
+        if not user or not user.is_authenticated:
+            return Response(
+                {"detail": "로그인이 필요합니다."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
 
-        if not student_id:
-            raise NotFound("student_id 쿼리 파라미터를 제공해야 합니다.")
+        sid = request.query_params.get('student_id')
 
-        try:
-            user = User.objects.get(student_id=student_id.upper())
-        except User.DoesNotExist:
-            raise NotFound("해당 학번의 사용자를 찾을 수 없습니다.")
+        if sid.upper() != user.student_id:
+            return Response(
+                {"detail": "해당 학번의 사용자를 찾을 수 없습니다."},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
-        serializer = self.get_serializer(user)
-        return Response(serializer.data)
+        data = self.get_serializer(user).data
+        return Response(data, status=status.HTTP_200_OK)
 
 
 # 내 정보 수정 (full_name, current_year 등)
 class UpdateProfileView(generics.UpdateAPIView):
-    permission_classes = [AllowAny]  # 로그인 없이 접근
+    permission_classes = [permissions.IsAuthenticated]
     serializer_class = UserSerializer
 
-    def get_object(self):
-        # 쿼리 파라미터에서 student_id 가져오기
-        student_id = self.request.query_params.get('student_id')
-        if not student_id:
-            raise NotFound("student_id 쿼리 파라미터를 제공해야 합니다.")
+    def patch(self, request, *args, **kwargs):
+        user = request.user
 
-        try:
-            return User.objects.get(student_id=student_id.upper())
-        except User.DoesNotExist:
-            raise NotFound("해당 학번의 사용자를 찾을 수 없습니다.")
+        # 1) URL 쿼리 student_id 검사
+        sid = request.query_params.get('student_id')
+        if not sid or sid.upper() != user.student_id:
+            return Response(
+                {"detail": "해당 학번의 사용자를 찾을 수 없습니다."},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
-    def update(self, request, *args, **kwargs):
-        user = self.get_object()
-
-        # 수정 허용 필드만 체크
-        allowed_fields = {'full_name', 'major'}
-        if any(field not in allowed_fields for field in request.data.keys()):
+        # 2) 수정 불가 필드 검사
+        if 'student_id' in request.data:
             return Response(
                 {"error": "수정할 수 없는 필드가 포함되어 있습니다."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # 데이터 업데이트
-        for field, value in request.data.items():
-            setattr(user, field, value)
-        user.save()
+        # 3) 그 외에는 부분 업데이트 실행
+        return super().partial_update(request, *args, **kwargs)
 
-        return Response({"message": "정보 수정 완료"}, status=status.HTTP_200_OK)
+    def get_object(self):
+        return self.request.user

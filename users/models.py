@@ -25,9 +25,8 @@ class User(AbstractUser):
             )
         ]
     )
-    current_year  = models.PositiveSmallIntegerField()
-
-    major = models.CharField(max_length=50)
+    current_year  = models.PositiveSmallIntegerField(null=True, blank=True)
+    major = models.CharField(max_length=100, blank=True)
 
     USERNAME_FIELD = 'student_id'
     REQUIRED_FIELDS = ['full_name']
