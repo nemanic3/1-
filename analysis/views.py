@@ -31,14 +31,13 @@ def analyze_graduation(user_id):
     requirement = GraduationRequirement.objects.filter(
         major=user.major, year=year
     ).first()
-
     if not requirement:
         return {"error": "졸업 요건 데이터가 없습니다.", "status": 500}
 
     # -----------------------
     # 학점 및 필수 과목 계산
     # -----------------------
-    # F 과목 제외, retake 과목 제외
+    # F 과목 및 재수강 과목 제외
     valid_courses = [
         c for c in courses
         if c.get("grade") != "F" and not c.get("retake", False)
@@ -48,52 +47,62 @@ def analyze_graduation(user_id):
     major_credit = sum(c["credit"] for c in valid_courses if "전공" in c["type"])
     general_credit = sum(c["credit"] for c in valid_courses if "교양" in c["type"])
     drbol_credit = sum(c["credit"] for c in valid_courses if "드볼" in c["type"])
-    sw_credit = sum(c["credit"] for c in valid_courses if "SW" in c["type"] or "데이터활용" in c["type"])
-    msc_credit = sum(c["credit"] for c in valid_courses if "MSC" in c["type"])
+    sw_credit    = sum(c["credit"] for c in valid_courses if "SW" in c["type"] or "데이터활용" in c["type"])
+    msc_credit   = sum(c["credit"] for c in valid_courses if "MSC" in c["type"])
     special_general_credit = sum(c["credit"] for c in valid_courses if "특성화교양" in c["type"])
 
-    # 전공 필수 과목 체크 (major_field가 전공필수인 것 기준)
-    must_courses = [c.strip() for c in requirement.major_must_courses.split(",")]
-    completed_courses = [c["name"] for c in valid_courses if c.get("major_field") == "전공필수"]
-    missing_major_courses = [c for c in must_courses if c not in completed_courses]
+    # 전공 필수 과목 체크 (JSONField 리스트에서 name만 추출)
+    must_courses = [ item.get("name") for item in requirement.major_must_courses ]
+    completed_major_must = [
+        c["name"] for c in valid_courses
+        if c.get("major_field") == "전공필수"
+    ]
+    missing_major_courses = [
+        course for course in must_courses
+        if course not in completed_major_must
+    ]
 
     # 드볼 영역 체크
-    drbol_areas = [a.strip() for a in requirement.drbol_areas.split(",")]
-    completed_areas = {c["type"] for c in valid_courses if "드볼" in c["type"]}
-    missing_drbol_areas = [a for a in drbol_areas if a not in completed_areas]
+    drbol_areas = [ a.strip() for a in requirement.drbol_areas.split(",") ]
+    completed_areas = { c["major_field"] for c in valid_courses if c.get("major_field") in drbol_areas }
+    missing_drbol_areas = [ area for area in drbol_areas if area not in completed_areas ]
 
-    # 상태 판정
+    # -----------------------
+    # 졸업 요건 상태 판정
+    # -----------------------
     status = "complete"
-    msg_list = []
+    messages = []
 
     if total_credit < requirement.total_required:
         status = "pending"
-        msg_list.append(f"총 학점 {requirement.total_required - total_credit}학점 부족")
+        messages.append(f"총 학점 {requirement.total_required - total_credit}학점 부족")
     if major_credit < requirement.major_required:
         status = "pending"
-        msg_list.append(f"전공 {requirement.major_required - major_credit}학점 부족")
+        messages.append(f"전공 {requirement.major_required - major_credit}학점 부족")
     if general_credit < requirement.general_required:
         status = "pending"
-        msg_list.append(f"교양필수 {requirement.general_required - general_credit}학점 부족")
+        messages.append(f"교양필수 {requirement.general_required - general_credit}학점 부족")
     if drbol_credit < requirement.drbol_required or missing_drbol_areas:
         status = "pending"
-        msg_list.append("드볼 영역 충족 안 됨")
+        messages.append("드볼 영역 충족 안 됨")
     if sw_credit < requirement.sw_required:
         status = "pending"
-        msg_list.append(f"SW/데이터활용 {requirement.sw_required - sw_credit}학점 부족")
+        messages.append(f"SW/데이터활용 {requirement.sw_required - sw_credit}학점 부족")
     if msc_credit < requirement.msc_required:
         status = "pending"
-        msg_list.append(f"MSC {requirement.msc_required - msc_credit}학점 부족")
+        messages.append(f"MSC {requirement.msc_required - msc_credit}학점 부족")
     if special_general_credit < requirement.special_general_required:
         status = "pending"
-        msg_list.append(f"특성화교양 {requirement.special_general_required - special_general_credit}학점 부족")
+        messages.append(f"특성화교양 {requirement.special_general_required - special_general_credit}학점 부족")
     if missing_major_courses:
         status = "pending"
-        msg_list.append(f"전공 필수 미이수: {', '.join(missing_major_courses)}")
+        messages.append(f"전공 필수 미이수: {', '.join(missing_major_courses)}")
 
-    message = " / ".join(msg_list) if msg_list else "졸업 요건 충족"
+    message = " / ".join(messages) if messages else "졸업 요건 충족"
 
-    # 최종 데이터
+    # -----------------------
+    # 최종 응답 데이터 구성
+    # -----------------------
     data = {
         "total_completed": total_credit,
         "total_required": requirement.total_required,
@@ -116,6 +125,7 @@ def analyze_graduation(user_id):
     }
 
     return {"data": data, "status": 200}
+
 
 
 # ---------------------------

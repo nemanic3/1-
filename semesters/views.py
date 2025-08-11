@@ -14,6 +14,14 @@ def get_valid_courses(transcript):
     return [c for c in courses if c.get("grade") != "F" and not c.get("retake", False)]
 
 
+def semester_sort_key(sem):
+    try:
+        year, term = map(int, sem.split('-'))
+        return (year, term)
+    except:
+        return (99, 9)
+
+
 # ---------- 1. 학기별 전체 이수 현황 ----------
 class SemesterCourseListView(APIView):
     def get(self, request, user_id):
@@ -23,7 +31,6 @@ class SemesterCourseListView(APIView):
 
         courses = get_valid_courses(transcript)
 
-        # 학기별 그룹화
         semester_data = {}
         for course in courses:
             sem = course.get("semester", "기타")
@@ -31,12 +38,7 @@ class SemesterCourseListView(APIView):
                 semester_data[sem] = []
             semester_data[sem].append(course)
 
-        # 학기 정렬 (2025-1, 2025-2 ...)
-        sorted_semesters = sorted(
-            semester_data.keys(),
-            key=lambda x: tuple(map(int, x.split('-'))) if '-' in x else (9999, 9)
-        )
-
+        sorted_semesters = sorted(semester_data.keys(), key=semester_sort_key)
         data = {sem: semester_data[sem] for sem in sorted_semesters}
         return Response(data, status=status.HTTP_200_OK)
 
@@ -56,14 +58,13 @@ class SemesterDetailView(APIView):
         return Response({"semester": semester, "courses": courses}, status=status.HTTP_200_OK)
 
 
-# ---------- 3. 특정 학기 미이수 과목 ----------
+# ---------- 3. 특정 학기의 전공필수 미이수 과목 ----------
 class SemesterMissingRequiredView(APIView):
     def get(self, request, semester, user_id):
         transcript = Transcript.objects.filter(user_id=user_id).last()
         if not transcript or not transcript.parsed_data:
             return Response({"error": "성적표 데이터가 없습니다."}, status=status.HTTP_404_NOT_FOUND)
 
-        # 유저 학번/학과 기준 졸업 요건 조회
         user = User.objects.filter(id=user_id).first()
         if not user:
             return Response({"error": "사용자를 찾을 수 없습니다."}, status=status.HTTP_404_NOT_FOUND)
@@ -78,13 +79,20 @@ class SemesterMissingRequiredView(APIView):
         if not requirement:
             return Response({"error": "졸업 요건 데이터가 없습니다."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        must_courses = [c.strip() for c in requirement.major_must_courses.split(",")]
+        must_courses_for_semester = [
+            c["name"] for c in requirement.major_must_courses
+            if c.get("semester") == semester
+        ]
+
         completed_courses = [
             c["name"] for c in get_valid_courses(transcript)
             if c.get("semester") == semester
         ]
 
-        missing_courses = [course for course in must_courses if course not in completed_courses]
+        missing_courses = [
+            course for course in must_courses_for_semester
+            if course not in completed_courses
+        ]
 
         return Response({
             "semester": semester,
@@ -109,7 +117,6 @@ class SemesterFilteredView(APIView):
                 if any(f in c.get("type", "") or f in c.get("major_field", "") for f in filter_list)
             ]
 
-        # 학기별 그룹화
         semester_data = {}
         for course in courses:
             sem = course.get("semester", "기타")
@@ -117,10 +124,38 @@ class SemesterFilteredView(APIView):
                 semester_data[sem] = []
             semester_data[sem].append(course)
 
-        sorted_semesters = sorted(
-            semester_data.keys(),
-            key=lambda x: tuple(map(int, x.split('-'))) if '-' in x else (9999, 9)
-        )
-
+        sorted_semesters = sorted(semester_data.keys(), key=semester_sort_key)
         data = {sem: semester_data[sem] for sem in sorted_semesters}
         return Response(data, status=status.HTTP_200_OK)
+
+
+# ---------- 5. 전체 전공필수 미이수 과목 ----------
+class MissingAllRequiredCoursesView(APIView):
+    def get(self, request, user_id):
+        transcript = Transcript.objects.filter(user_id=user_id).last()
+        if not transcript or not transcript.parsed_data:
+            return Response({"error": "성적표 데이터가 없습니다."}, status=status.HTTP_404_NOT_FOUND)
+
+        user = User.objects.filter(id=user_id).first()
+        if not user:
+            return Response({"error": "사용자를 찾을 수 없습니다."}, status=status.HTTP_404_NOT_FOUND)
+
+        year_prefix = int(user.student_id[1:3])
+        year = 2000 + year_prefix
+
+        requirement = GraduationRequirement.objects.filter(
+            major=user.major, year=year
+        ).first()
+
+        if not requirement:
+            return Response({"error": "졸업 요건 데이터가 없습니다."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        all_must_courses = [c["name"] for c in requirement.major_must_courses]
+        completed_courses = [c["name"] for c in get_valid_courses(transcript)]
+
+        missing_courses = [c for c in all_must_courses if c not in completed_courses]
+
+        return Response({
+            "missing_required_courses": missing_courses
+        }, status=status.HTTP_200_OK)
+
