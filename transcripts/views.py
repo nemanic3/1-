@@ -1,3 +1,4 @@
+# transcripts/views.py
 from rest_framework.views import APIView
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
@@ -10,7 +11,11 @@ from .serializers import (
     TranscriptStatusSerializer,
     TranscriptParsedSerializer
 )
-from .tasks import process_transcript
+
+
+
+def _rows_to_tsv(rows: list[list[str]]) -> str:
+    return "\n".join("\t".join(map(str, r)) for r in rows)
 
 
 class TranscriptUploadView(APIView):
@@ -21,31 +26,26 @@ class TranscriptUploadView(APIView):
         if request.user.id != user_id:
             return Response(status=status.HTTP_401_UNAUTHORIZED)
 
-        # 'files' 키가 request.data에 있는지 확인
+        # ✅ 여기서만 import (지연 임포트)
+        try:
+            from .tasks import process_transcript
+        except Exception as e:
+            return Response({"error": f"OCR 모듈 로드 실패: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
         if 'files' not in request.data:
-            return Response(
-                {"error": "파일이 전송되지 않았습니다."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            return Response({"error": "파일이 전송되지 않았습니다."}, status=status.HTTP_400_BAD_REQUEST)
 
         serializer = TranscriptUploadSerializer(
-            data={"files": request.data.getlist('files')},  # files를 리스트로 감싸서 전달
+            data={"files": request.data.getlist('files')},
             context={'request': request}
         )
         if serializer.is_valid():
             transcript = serializer.save()
+            # Celery 비동기 실행
             process_transcript.delay(transcript.id)
-            # Serializer의 응답을 그대로 사용하거나, 기존처럼 직접 구성할 수 있습니다.
-            # 여기서는 API 명세에 맞게 직접 구성합니다.
-            return Response(
-                {"message": "업로드 완료", "status": "processing"},
-                status=status.HTTP_201_CREATED
-            )
-        return Response(
-            serializer.errors,  # 에러가 발생하면 serializer의 에러 메시지를 전달
-            status=status.HTTP_400_BAD_REQUEST
-        )
+            return Response({"message": "업로드 완료", "status": "processing"}, status=status.HTTP_201_CREATED)
 
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class TranscriptStatusView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -104,7 +104,18 @@ class TranscriptParsedView(APIView):
             )
 
         # 파싱된 JSON 데이터를 그대로 반환
-        return Response(
-            transcript.parsed_data,
-            status=status.HTTP_200_OK
-        )
+        # 파싱된 JSON 데이터를 그대로 반환  ← 이 부분을 전부 교체
+        data = transcript.parsed_data
+
+        # 새 파이프라인: 2차원 rows로 저장된 경우 → 학기별 블록 텍스트로 반환
+        if isinstance(data, list) and data and isinstance(data[0], list):
+            return HttpResponse(rows_to_text(data, group_by_term=True),
+                                content_type="text/plain; charset=utf-8")
+
+        # 이미 문자열이면 그대로 반환
+        if isinstance(data, str):
+            return HttpResponse(data, content_type="text/plain; charset=utf-8")
+
+        # 그 외(예: 과거 포맷 등)는 JSON 그대로 반환
+        return Response(data, status=status.HTTP_200_OK)
+        # ----- 교체 끝 -----

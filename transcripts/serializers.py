@@ -44,4 +44,3 @@ class TranscriptParsedSerializer(serializers.ModelSerializer):
     class Meta:
         model = Transcript
         fields = ['id', 'parsed_data']
-

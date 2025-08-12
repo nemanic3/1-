@@ -22,7 +22,15 @@ class GraduationStatusSerializer(serializers.Serializer):
     special_general_completed = serializers.IntegerField()
     special_general_required = serializers.IntegerField()
 
-    missing_major_courses = serializers.ListField(child=serializers.CharField())
+    # 변경 부분: 학기별 전공필수 미이수 과목
+    missing_major_courses = serializers.DictField(
+        child=serializers.ListField(
+            child=serializers.DictField(
+                child=serializers.CharField()
+            )
+        )
+    )
+
     missing_drbol_areas = serializers.ListField(child=serializers.CharField())
 
     graduation_status = serializers.CharField()
