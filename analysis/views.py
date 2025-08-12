@@ -290,10 +290,35 @@ class GeneralCreditView(generics.RetrieveAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, user_id):
-        result = analyze_graduation(user_id)
-        if "error" in result:
-            return Response({"error": result["error"]}, status=result["status"])
-        return Response({"general_credit": result["data"]["general_completed"]})
+        user = User.objects.filter(id=user_id).first()
+        if not user:
+            return Response({"error": "사용자를 찾을 수 없습니다."}, status=404)
+
+        transcript = Transcript.objects.filter(user_id=user_id).order_by("-created_at").first()
+        if not transcript or not transcript.parsed_data:
+            return Response({"general_credit": 0}, status=200)
+
+        # 졸업요건에서 드볼 영역명 리스트 가져오기
+        req = GraduationRequirement.objects.filter(major=user.major).first()
+        drbol_areas = []
+        if req and req.drbol_areas:
+            drbol_areas = [a.strip() for a in req.drbol_areas.split(",") if a.strip()]
+
+        courses = transcript.parsed_data.get("courses", [])
+        general_credit = 0
+
+        for c in courses:
+            ctype  = (c.get("type") or "").strip()                # 예: 교양 / 드볼 / 특성화교양 / 전공
+            mfield = (c.get("major_field") or "").strip()         # 예: 교양필수 / 교양선택 / 드볼 영역명 등
+            credit = int(c.get("credit") or 0)
+
+            is_general_type  = ctype in {"교양", "드볼", "특성화교양"}
+            is_general_field = mfield in {"교양필수", "교양선택", "특성화교양"} or mfield in drbol_areas
+
+            if credit > 0 and (is_general_type or is_general_field):
+                general_credit += credit
+
+        return Response({"general_credit": general_credit}, status=200)
 
 
 class MajorCreditView(generics.RetrieveAPIView):
